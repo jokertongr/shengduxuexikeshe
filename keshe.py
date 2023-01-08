@@ -1,0 +1,133 @@
+#导入包
+import tensorflow as tf
+import pandas as pd
+import matplotlib.pyplot as plt
+from tensorflow.keras import layers
+from sklearn.model_selection import train_test_split
+from collections import Counter
+from gensim.models import Word2Vec
+import numpy as np
+from sklearn import preprocessing
+from sklearn.metrics import precision_score, accuracy_score,recall_score, f1_score,roc_auc_score, precision_recall_fscore_support, roc_curve, classification_report
+train_data=pd.read_csv("train_set.csv",sep='\t')
+test_data=pd.read_csv("test_a.csv",sep='\t')
+x=train_data['text']
+y=train_data['label']
+y=y.values.reshape(y.shape[0],1)
+enc = preprocessing.OneHotEncoder(categories='auto')#one-Hot独热编码
+enc.fit(y)
+y=enc.transform(y).toarray()
+enc.categories_
+x=x.apply(lambda a:a.split())#分词
+w2v = Word2Vec(sentences=x,size=300,window=5,min_count=5,sample=1e-3,sg=1)# 训练word2vec词嵌入模型
+#window 句子中当前单词与预测词之间的最大距离。
+#size 词向量的维数
+#min_count 忽略总频率低于此的所有单词。
+#sg 训练算法：1为skip-gram，否则为CBOW.
+#hs 如果是1，则使用层次化的Softmax进行模型训练。如果为0或负数，则采用负采样.
+#cbow_mean 如果为0，则使用上下文单词向量的和。如果是1，使用平均数，只有在使用CBOW时才适用。
+#alpha 初始学习率。
+#sample 配置高频词随机下采样的阈值，有效范围是(0, 1e-5)。
+w2v.save("bag") #训练完成后保持模型到本地，一次训练多次使用；
+# w2v = Word2Vec.load("bag")
+def average(text,size=300):
+    if len(text) < 1:
+        return np.zeros(size)
+    a = [w2v.wv[w] if w in w2v.wv else np.zeros(size) for w in text]
+    length = len(a)
+    summed = np.sum(a,axis=0)
+    ave = np.divide(summed,length)
+    return ave
+x = x.apply(average)
+list_corpus = x.tolist()
+x_train,x_test,y_train,y_test = train_test_split(list_corpus,y,test_size=0.05,random_state=1)
+x_train=pd.DataFrame(x_train)
+x_test=pd.DataFrame(x_test)
+x_train=x_train.values.reshape(x_train.shape[0],x_train.shape[1],1)
+x_test=x_test.values.reshape(x_test.shape[0],x_test.shape[1],1)
+y_train=np.array(y_train)
+y_test=np.array(y_test)
+x_train.shape,y_train.shape,x_test.shape,y_test.shape
+num_classes=14 # label中共14个类
+cnn=tf.keras.Sequential([tf.keras.layers.Conv1D(input_shape=x_train.shape[1:],filters=32,kernel_size=5,strides=1,
+                                                padding='same',activation='relu',name='conv1'),
+                           tf.keras.layers.MaxPool1D(pool_size=5,strides=2,name='pool1'),
+                           tf.keras.layers.Conv1D(filters=64,kernel_size=5,strides=1,
+                                                  padding='same',activation='relu',name='conv2'),
+                           tf.keras.layers.MaxPool1D(pool_size=5,strides=2,name='pool2'),
+                           tf.keras.layers.Conv1D(filters=128,kernel_size=5,strides=1,
+                                                  padding='same',activation='relu',name='conv3'),
+                           tf.keras.layers.MaxPool1D(pool_size=5,strides=2,name='pool3'),
+                           tf.keras.layers.Flatten(),
+                           tf.keras.layers.Dense(128,activation='relu',name='fc1'),
+                           tf.keras.layers.Dense(64,activation='relu',name='fc2'),
+                           tf.keras.layers.Dropout(0.5),
+                           tf.keras.layers.Dense(32,activation='relu',name='fc3'),
+                           tf.keras.layers.Dense(num_classes,activation='softmax',name='output')])
+nadam = tf.keras.optimizers.Nadam(lr=1e-3)
+cnn.compile(optimizer=nadam,loss='categorical_crossentropy',metrics=['categorical_accuracy']) #设置优化器和损失函数
+cnn.summary()#查看模型基本信息
+history=cnn.fit(x_train,y_train,epochs=100,verbose=1)
+#绘制句子长度的直方图
+import matplotlib.pyplot as plt
+%pylab inline
+_ = plt.hist(train_df['text_len'],bins=200)
+plt.xlabel('Text char count')
+plt.title('Histogram of char count')
+#绘制新闻类别的直方图
+train_df['label'].value_counts().plot(kind='bar')
+plt.title('News class count')
+plt.xlabel("category")
+#打印损失率
+plt.plot(history.history['loss'])
+plt.legend(['training'], loc='upper left')
+plt.show()
+#测试集评估
+# sortmax 结果转 onehot
+def props_to_onehot(props):
+    if isinstance(props, list):
+        props = np.array(props)
+    a = np.argmax(props, axis=1)
+    b = np.zeros((len(a), props.shape[1]))
+    b[np.arange(len(a)), a] = 1
+    return b
+# 自定义评估方法
+def evalute_ty(predict_prop,predict_y,real_y):
+    '''自定义模型评估方法
+        评估不同阈值下模型的性能，将打印acc/precision/recall/f1/auc值
+    Args:
+        predict_prop:预测的概率值
+        predict_y：预测值
+        real_y ：真实标签
+    '''
+    acc=round(accuracy_score(real_y,predict_y),3)
+    precision=round(precision_score(real_y, predict_y,average='weighted'),3)#准确率：预测为正的样本中实际为正的比例
+    recall=round(recall_score(real_y, predict_y,average='weighted'),3)#召回率：所有正样本中预测为正的比例
+    f1=round(f1_score(real_y, predict_y,average='weighted'),3)
+    auc=round(roc_auc_score(y_test, predict_prop,multi_class='ovo'),3)
+    print('acc {},precision {},recall {},f1 {},auc {}'.format(acc,precision,recall,f1,auc))
+predict_prop=cnn.predict(x_test)
+predict_prop.shape
+predict_y=enc.inverse_transform(props_to_onehot(predict_prop))
+real_y=enc.inverse_transform(y_test)
+evalute_ty(predict_prop,predict_y,real_y)
+#最终结果
+x_test=test_data['text']
+x_test=x_test.apply(lambda a:a.split())
+x_test = x_test.apply(average) #注意此处的df["text"] 未分词
+test_list_corpus = x_test.tolist()
+x_test=pd.DataFrame(test_list_corpus)
+x_test=x_test.values.reshape(x_test.shape[0],x_test.shape[1],1)
+x_test.shape
+res=cnn.predict(x_test)
+final=enc.inverse_transform(props_to_onehot(res))
+final=final.reshape(final.shape[0],)
+df=pd.DataFrame()
+df['label']=final
+df.to_csv('textcnn_submit.csv',index=None)
+
+
+
+
+
+
